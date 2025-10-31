@@ -99,6 +99,27 @@ This setting overrides the `NO_COLOR` environment variable (if set).
 color = "never" # Turn off color
 ```
 
+### Hyperlinks in output
+
+Possible values are `true` or `false` (default: `false`).
+
+When enabled, file paths in commands like `jj status`, `jj diff`, and `jj log -p`
+become clickable hyperlinks in supported terminals using the OSC 8 escape sequence
+standard.
+
+Hyperlinks are only shown when:
+- The config is enabled (`ui.hyperlinks = true`)
+- Output is to a TTY
+- Color is enabled (hyperlinks require ANSI escape sequence support)
+
+Supported terminals include: kitty, WezTerm, GNOME Terminal 3.50+, VSCode
+integrated terminal, Windows Terminal, Alacritty, and others that support OSC 8.
+
+```toml
+[ui]
+hyperlinks = true
+```
+
 ### Custom colors and styles
 
 You can customize the colors used for various elements of the UI. For example:

@@ -577,6 +577,14 @@ fn is_valid_repo_path_str(value: &str) -> bool {
     !value.starts_with('/') && !value.ends_with('/') && !value.contains("//")
 }
 
+/// Formats a string with OSC 8 hyperlink escape sequences.
+///
+/// Creates a clickable hyperlink in supported terminals using the OSC 8 standard.
+/// Format: ESC ]8;;<url> ESC \ <text> ESC ]8;; ESC \
+fn format_osc8_hyperlink(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
+}
+
 /// An error from `RepoPathUiConverter::parse_file_path`.
 #[derive(Debug, Error)]
 pub enum UiPathParseError {
@@ -678,6 +686,55 @@ impl RepoPathUiConverter {
             }
         }
         formatted
+    }
+
+    /// Format a file path with an OSC 8 hyperlink for terminal display.
+    ///
+    /// When `hostname` is provided, generates a clickable hyperlink using the file:// URL scheme.
+    /// The display text is the same as `format_file_path()`.
+    ///
+    /// Returns a plain string if `hostname` is None.
+    pub fn format_file_path_hyperlink(&self, file: &RepoPath, hostname: Option<&str>) -> String {
+        let display_path = self.format_file_path(file);
+
+        if let Some(host) = hostname {
+            match self {
+                Self::Fs { base, .. } => {
+                    let abs_path = file.to_fs_path_unchecked(base);
+                    let url = format!("file://{}{}", host, abs_path.display());
+                    format_osc8_hyperlink(&url, &display_path)
+                }
+            }
+        } else {
+            display_path
+        }
+    }
+
+    /// Format a copy from `source` to `target` with OSC 8 hyperlinks for terminal display.
+    ///
+    /// Similar to `format_copied_path()` but wraps the result in hyperlinks when `hostname`
+    /// is provided. The hyperlink URLs point to the target file.
+    ///
+    /// Returns the same format as `format_copied_path()` if `hostname` is None.
+    pub fn format_copied_path_hyperlink(
+        &self,
+        source: &RepoPath,
+        target: &RepoPath,
+        hostname: Option<&str>,
+    ) -> String {
+        let display_path = self.format_copied_path(source, target);
+
+        if let Some(host) = hostname {
+            match self {
+                Self::Fs { base, .. } => {
+                    let abs_path = target.to_fs_path_unchecked(base);
+                    let url = format!("file://{}{}", host, abs_path.display());
+                    format_osc8_hyperlink(&url, &display_path)
+                }
+            }
+        } else {
+            display_path
+        }
     }
 
     /// Parses a path from the UI.
@@ -1214,5 +1271,140 @@ mod tests {
             format("x/something/1to2.txt", "x/something/something/1to2.txt"),
             "x/something/{ => something}/1to2.txt"
         );
+    }
+
+    #[test]
+    fn test_format_file_path_hyperlink_with_hostname() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user"),
+            base: PathBuf::from("/home/user/repo"),
+        };
+
+        let result = ui.format_file_path_hyperlink(repo_path("src/main.rs"), Some("myhost"));
+
+        // Check OSC 8 opening sequence
+        assert!(result.contains("\x1b]8;;"));
+        // Check file:// URL with hostname
+        assert!(result.contains("file://myhost/home/user/repo/src/main.rs"));
+        // Check OSC 8 closing sequence
+        assert!(result.contains("\x1b]8;;\x1b\\"));
+        // Check display text is present
+        assert!(result.contains("src/main.rs") || result.contains("src\\main.rs"));
+    }
+
+    #[test]
+    fn test_format_file_path_hyperlink_without_hostname() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user"),
+            base: PathBuf::from("/home/user/repo"),
+        };
+
+        let result = ui.format_file_path_hyperlink(repo_path("src/main.rs"), None);
+
+        // Should return plain path when hostname is None
+        assert!(!result.contains("\x1b]8;;"));
+        assert!(result.contains("src/main.rs") || result.contains("src\\main.rs"));
+    }
+
+    #[test]
+    fn test_format_file_path_hyperlink_root() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user/repo"),
+            base: PathBuf::from("/home/user/repo"),
+        };
+
+        let result = ui.format_file_path_hyperlink(RepoPath::root(), Some("myhost"));
+
+        // Root path should produce hyperlink to repo base
+        assert!(result.contains("file://myhost/home/user/repo"));
+        assert!(result.contains("\x1b]8;;"));
+    }
+
+    #[test]
+    fn test_format_file_path_hyperlink_with_spaces() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user"),
+            base: PathBuf::from("/home/user/my repo"),
+        };
+
+        let result = ui.format_file_path_hyperlink(repo_path("my file.txt"), Some("myhost"));
+
+        // Spaces should be preserved in URL (no percent-encoding in initial implementation)
+        assert!(result.contains("file://myhost/home/user/my repo/my file.txt"));
+        assert!(result.contains("\x1b]8;;"));
+    }
+
+    #[test]
+    fn test_format_copied_path_hyperlink_with_hostname() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user"),
+            base: PathBuf::from("/home/user/repo"),
+        };
+
+        let result = ui.format_copied_path_hyperlink(
+            repo_path("old/path.txt"),
+            repo_path("new/path.txt"),
+            Some("myhost"),
+        );
+
+        // Should contain OSC 8 sequences
+        assert!(result.contains("\x1b]8;;"));
+        // URL should point to the target (new) path
+        assert!(result.contains("file://myhost/home/user/repo/new/path.txt"));
+        // Display text should show the rename pattern
+        assert!(result.contains("{old => new}") || result.contains("old") && result.contains("new"));
+    }
+
+    #[test]
+    fn test_format_copied_path_hyperlink_without_hostname() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user"),
+            base: PathBuf::from("/home/user/repo"),
+        };
+
+        let result = ui.format_copied_path_hyperlink(
+            repo_path("old/path.txt"),
+            repo_path("new/path.txt"),
+            None,
+        );
+
+        // Should return plain path when hostname is None
+        assert!(!result.contains("\x1b]8;;"));
+        assert!(result.contains("{old => new}") || result.contains("old") && result.contains("new"));
+    }
+
+    #[test]
+    fn test_format_copied_path_hyperlink_same_name() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/home/user"),
+            base: PathBuf::from("/home/user/repo"),
+        };
+
+        let result = ui.format_copied_path_hyperlink(
+            repo_path("one/two/file.txt"),
+            repo_path("one/three/file.txt"),
+            Some("myhost"),
+        );
+
+        // Should contain hyperlink
+        assert!(result.contains("\x1b]8;;"));
+        // URL should point to target
+        assert!(result.contains("file://myhost/home/user/repo/one/three/file.txt"));
+        // Display should show the directory change
+        assert!(result.contains("two") && result.contains("three"));
+    }
+
+    #[test]
+    fn test_osc8_hyperlink_format() {
+        let ui = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/repo"),
+            base: PathBuf::from("/repo"),
+        };
+
+        let result = ui.format_file_path_hyperlink(repo_path("file.txt"), Some("host"));
+
+        // Verify OSC 8 format: ESC ]8;;<url> ESC \ <text> ESC ]8;; ESC \
+        assert!(result.starts_with("\x1b]8;;file://"));
+        assert!(result.contains("\x1b\\file.txt\x1b]8;;\x1b\\"));
     }
 }

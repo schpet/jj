@@ -158,6 +158,7 @@ pub(crate) fn cmd_log(
 
     let store = repo.store();
     let diff_renderer = workspace_command.diff_renderer_for_log(&args.diff_format, args.patch)?;
+    let hostname = workspace_command.hyperlink_hostname(ui);
     let graph_style = GraphStyle::from_settings(settings)?;
 
     let use_elided_nodes = settings.get_bool("ui.log-synthetic-elided-nodes")?;
@@ -259,6 +260,7 @@ pub(crate) fn cmd_log(
                             &commit,
                             matcher.as_ref(),
                             within_graph.width(),
+                            hostname.as_deref(),
                         )
                         .block_on()?;
                 }
@@ -306,7 +308,7 @@ pub(crate) fn cmd_log(
                 if let Some(renderer) = &diff_renderer {
                     let width = ui.term_width();
                     renderer
-                        .show_patch(ui, formatter, &commit, matcher.as_ref(), width)
+                        .show_patch(ui, formatter, &commit, matcher.as_ref(), width, hostname.as_deref())
                         .block_on()?;
                 }
             }

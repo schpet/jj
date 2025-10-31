@@ -80,8 +80,9 @@ pub(crate) fn cmd_show(
     let formatter = formatter.as_mut();
     template.format(&commit, formatter)?;
     if !args.no_patch {
+        let hostname = workspace_command.hyperlink_hostname(ui);
         diff_renderer
-            .show_patch(ui, formatter, &commit, &EverythingMatcher, ui.term_width())
+            .show_patch(ui, formatter, &commit, &EverythingMatcher, ui.term_width(), hostname.as_deref())
             .block_on()?;
     }
     Ok(())

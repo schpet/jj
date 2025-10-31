@@ -25,6 +25,7 @@ track-default-bookmark-on-clone = true
 [ui]
 always-allow-large-revsets = true
 color = "auto"
+hyperlinks = false
 diff-formatter = ":color-words"
 diff-instructions = true
 graph.style = "curved"

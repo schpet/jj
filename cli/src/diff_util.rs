@@ -447,9 +447,10 @@ impl<'a> DiffRenderer<'a> {
         matcher: &dyn Matcher,
         copy_records: &CopyRecords,
         width: usize,
+        hostname: Option<&str>,
     ) -> Result<(), DiffRenderError> {
         let mut formatter = formatter.labeled("diff");
-        self.show_diff_trees(ui, *formatter, trees, matcher, copy_records, width)
+        self.show_diff_trees(ui, *formatter, trees, matcher, copy_records, width, hostname)
             .await
     }
 
@@ -461,6 +462,7 @@ impl<'a> DiffRenderer<'a> {
         matcher: &dyn Matcher,
         copy_records: &CopyRecords,
         width: usize,
+        hostname: Option<&str>,
     ) -> Result<(), DiffRenderError> {
         let store = self.repo.store();
         let path_converter = self.path_converter;
@@ -469,7 +471,7 @@ impl<'a> DiffRenderer<'a> {
                 DiffFormat::Summary => {
                     let tree_diff =
                         from_tree.diff_stream_with_copies(to_tree, matcher, copy_records);
-                    show_diff_summary(formatter, tree_diff, path_converter).await?;
+                    show_diff_summary(formatter, tree_diff, path_converter, hostname).await?;
                 }
                 DiffFormat::Stat(options) => {
                     let tree_diff =
@@ -477,17 +479,17 @@ impl<'a> DiffRenderer<'a> {
                     let stats =
                         DiffStats::calculate(store, tree_diff, options, self.conflict_marker_style)
                             .block_on()?;
-                    show_diff_stats(formatter, &stats, path_converter, width)?;
+                    show_diff_stats(formatter, &stats, path_converter, width, hostname)?;
                 }
                 DiffFormat::Types => {
                     let tree_diff =
                         from_tree.diff_stream_with_copies(to_tree, matcher, copy_records);
-                    show_types(formatter, tree_diff, path_converter).await?;
+                    show_types(formatter, tree_diff, path_converter, hostname).await?;
                 }
                 DiffFormat::NameOnly => {
                     let tree_diff =
                         from_tree.diff_stream_with_copies(to_tree, matcher, copy_records);
-                    show_names(formatter, tree_diff, path_converter).await?;
+                    show_names(formatter, tree_diff, path_converter, hostname).await?;
                 }
                 DiffFormat::Git(options) => {
                     let tree_diff =
@@ -511,6 +513,7 @@ impl<'a> DiffRenderer<'a> {
                         path_converter,
                         options,
                         self.conflict_marker_style,
+                        hostname,
                     )
                     .await?;
                 }
@@ -611,6 +614,7 @@ impl<'a> DiffRenderer<'a> {
         to_commit: &Commit,
         matcher: &dyn Matcher,
         width: usize,
+        hostname: Option<&str>,
     ) -> Result<(), DiffRenderError> {
         let mut formatter = formatter.labeled("diff");
         let from_description = if from_commits.is_empty() {
@@ -636,6 +640,7 @@ impl<'a> DiffRenderer<'a> {
             matcher,
             &copy_records,
             width,
+            hostname,
         )
         .await
     }
@@ -648,6 +653,7 @@ impl<'a> DiffRenderer<'a> {
         commit: &Commit,
         matcher: &dyn Matcher,
         width: usize,
+        hostname: Option<&str>,
     ) -> Result<(), DiffRenderError> {
         let from_tree = commit.parent_tree_async(self.repo).await?;
         let to_tree = commit.tree_async().await?;
@@ -663,6 +669,7 @@ impl<'a> DiffRenderer<'a> {
             matcher,
             &copy_records,
             width,
+            hostname,
         )
         .await
     }
@@ -1286,6 +1293,7 @@ pub async fn show_color_words_diff(
     path_converter: &RepoPathUiConverter,
     options: &ColorWordsDiffOptions,
     marker_style: ConflictMarkerStyle,
+    hostname: Option<&str>,
 ) -> Result<(), DiffRenderError> {
     let materialize_options = ConflictMaterializeOptions {
         marker_style,
@@ -1297,8 +1305,8 @@ pub async fn show_color_words_diff(
     while let Some(MaterializedTreeDiffEntry { path, values }) = diff_stream.next().await {
         let left_path = path.source();
         let right_path = path.target();
-        let left_ui_path = path_converter.format_file_path(left_path);
-        let right_ui_path = path_converter.format_file_path(right_path);
+        let left_ui_path = path_converter.format_file_path_hyperlink(left_path, hostname);
+        let right_ui_path = path_converter.format_file_path_hyperlink(right_path, hostname);
         let (left_value, right_value) = values?;
 
         match (&left_value, &right_value) {
@@ -1719,14 +1727,15 @@ pub async fn show_diff_summary(
     formatter: &mut dyn Formatter,
     mut tree_diff: BoxStream<'_, CopiesTreeDiffEntry>,
     path_converter: &RepoPathUiConverter,
+    hostname: Option<&str>,
 ) -> Result<(), DiffRenderError> {
     while let Some(CopiesTreeDiffEntry { path, values }) = tree_diff.next().await {
         let values = values?;
         let (label, sigil) = diff_status_label_and_char(&path, &values);
         let path = if path.copy_operation().is_some() {
-            path_converter.format_copied_path(path.source(), path.target())
+            path_converter.format_copied_path_hyperlink(path.source(), path.target(), hostname)
         } else {
-            path_converter.format_file_path(path.target())
+            path_converter.format_file_path_hyperlink(path.target(), hostname)
         };
         writeln!(formatter.labeled(label), "{sigil} {path}")?;
     }
@@ -1866,8 +1875,10 @@ pub fn show_diff_stats(
     stats: &DiffStats,
     path_converter: &RepoPathUiConverter,
     display_width: usize,
+    hostname: Option<&str>,
 ) -> io::Result<()> {
-    let ui_paths = stats
+    // Get plain paths first (for width measurement)
+    let plain_paths = stats
         .entries()
         .iter()
         .map(|stat| {
@@ -1889,7 +1900,7 @@ pub fn show_diff_stats(
 
     // Choose how many columns to use for the path.  The right side will use the
     // rest. Start with the longest path.  The code below might shorten it.
-    let mut max_path_width = ui_paths.iter().map(|s| s.width()).max().unwrap_or(0);
+    let mut max_path_width = plain_paths.iter().map(|s| s.width()).max().unwrap_or(0);
 
     // Fit to the available display width, but always assume at least a tiny bit of
     // room.
@@ -1939,13 +1950,30 @@ pub fn show_diff_stats(
         _ => 1.0,
     };
 
-    for (stat, ui_path) in iter::zip(stats.entries(), &ui_paths) {
+    for (i, stat) in stats.entries().iter().enumerate() {
         // replace start of path with ellipsis if the path is too long
-        let (path, path_width) = text_util::elide_start(ui_path, "...", max_path_width);
+        let (elided_path, path_width) = text_util::elide_start(&plain_paths[i], "...", max_path_width);
+
+        // Only apply hyperlinks if path wasn't elided (to avoid mismatched display text)
+        let was_elided = elided_path.len() != plain_paths[i].len();
+        let display_path = if !was_elided && hostname.is_some() {
+            if stat.path.copy_operation().is_some() {
+                path_converter.format_copied_path_hyperlink(
+                    stat.path.source(),
+                    stat.path.target(),
+                    hostname,
+                )
+            } else {
+                path_converter.format_file_path_hyperlink(stat.path.target(), hostname)
+            }
+        } else {
+            elided_path.into_owned()
+        };
+
         let path_pad_width = max_path_width - path_width;
         write!(
             formatter,
-            "{path}{:path_pad_width$} | ",
+            "{display_path}{:path_pad_width$} | ",
             "", // pad to max_path_width
         )?;
         if let Some((added, removed)) = stat.added_removed {
@@ -2007,6 +2035,7 @@ pub async fn show_types(
     formatter: &mut dyn Formatter,
     mut tree_diff: BoxStream<'_, CopiesTreeDiffEntry>,
     path_converter: &RepoPathUiConverter,
+    hostname: Option<&str>,
 ) -> Result<(), DiffRenderError> {
     while let Some(CopiesTreeDiffEntry { path, values }) = tree_diff.next().await {
         let values = values?;
@@ -2015,7 +2044,7 @@ pub async fn show_types(
             "{}{} {}",
             diff_summary_char(&values.before),
             diff_summary_char(&values.after),
-            path_converter.format_copied_path(path.source(), path.target())
+            path_converter.format_copied_path_hyperlink(path.source(), path.target(), hostname)
         )?;
     }
     Ok(())
@@ -2038,12 +2067,13 @@ pub async fn show_names(
     formatter: &mut dyn Formatter,
     mut tree_diff: BoxStream<'_, CopiesTreeDiffEntry>,
     path_converter: &RepoPathUiConverter,
+    hostname: Option<&str>,
 ) -> io::Result<()> {
     while let Some(CopiesTreeDiffEntry { path, .. }) = tree_diff.next().await {
         writeln!(
             formatter,
             "{}",
-            path_converter.format_file_path(path.target())
+            path_converter.format_file_path_hyperlink(path.target(), hostname)
         )?;
     }
     Ok(())

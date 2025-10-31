@@ -140,7 +140,7 @@ pub(crate) fn cmd_absorb(
             let matcher = &EverythingMatcher; // also print excluded paths
             let width = ui.term_width();
             diff_renderer
-                .show_patch(ui, formatter.as_mut(), commit, matcher, width)
+                .show_patch(ui, formatter.as_mut(), commit, matcher, width, None)
                 .block_on()?;
         }
     }

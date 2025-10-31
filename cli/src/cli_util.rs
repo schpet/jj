@@ -1320,6 +1320,34 @@ to the current parents may contain changes from multiple commits.
         self.path_converter().format_file_path(file)
     }
 
+    /// Get the hostname for use in file:// URLs if hyperlinks are enabled.
+    ///
+    /// Returns Some(hostname) on Unix when hyperlinks are enabled and output is
+    /// to a TTY with color support. Returns None on Windows or when hyperlinks
+    /// are disabled.
+    pub fn hyperlink_hostname(&self, ui: &Ui) -> Option<String> {
+        // Check if hyperlinks are enabled via config and output is to a TTY with color
+        let hyperlinks_enabled = self
+            .settings()
+            .get_bool("ui.hyperlinks")
+            .unwrap_or(false)
+            && ui.color();
+
+        if hyperlinks_enabled {
+            // On Unix, include hostname. On Windows, return None (no hostname in URL).
+            #[cfg(unix)]
+            {
+                Some(self.settings().operation_hostname().to_string())
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     /// Parses a path relative to cwd into a RepoPath, which is relative to the
     /// workspace root.
     pub fn parse_file_path(&self, input: &str) -> Result<RepoPathBuf, UiPathParseError> {

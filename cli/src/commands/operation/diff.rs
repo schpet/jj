@@ -595,13 +595,14 @@ async fn show_change_diff(
                     commit,
                     &EverythingMatcher,
                     width,
+                    None,
                 )
                 .await?;
         }
         ModifiedChange::Abandoned { commit } => {
             // TODO: Should we show a reverse diff?
             diff_renderer
-                .show_patch(ui, formatter, commit, &EverythingMatcher, width)
+                .show_patch(ui, formatter, commit, &EverythingMatcher, width, None)
                 .await?;
         }
     }

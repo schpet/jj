@@ -216,6 +216,7 @@ pub(crate) fn cmd_diff(
         let tree_diff = from_tree.diff_stream_with_copies(&to_tree, &matcher, &copy_records);
         show_templated(ui.stdout_formatter().as_mut(), tree_diff, template).block_on()?;
     }
+    let hostname = workspace_command.hyperlink_hostname(ui);
     diff_renderer
         .show_diff(
             ui,
@@ -224,6 +225,7 @@ pub(crate) fn cmd_diff(
             &matcher,
             &copy_records,
             ui.term_width(),
+            hostname.as_deref(),
         )
         .block_on()?;
     print_unmatched_explicit_paths(

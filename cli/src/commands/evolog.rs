@@ -188,6 +188,7 @@ pub(crate) fn cmd_evolog(
                         &entry.commit,
                         &EverythingMatcher,
                         within_graph.width(),
+                        None,
                     )
                     .block_on()?;
             }
@@ -222,6 +223,7 @@ pub(crate) fn cmd_evolog(
                         &entry.commit,
                         &EverythingMatcher,
                         width,
+                        None,
                     )
                     .block_on()?;
             }

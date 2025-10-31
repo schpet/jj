@@ -2222,6 +2222,7 @@ fn builtin_tree_diff_methods<'repo>() -> CommitTemplateBuildMethodFnMap<'repo, T
                             path_converter,
                             &options,
                             conflict_marker_style,
+                            None, // Templates don't support hyperlinks
                         )
                         .block_on()
                     })
@@ -2313,7 +2314,7 @@ fn builtin_tree_diff_methods<'repo>() -> CommitTemplateBuildMethodFnMap<'repo, T
             let template = self_property
                 .map(move |diff| {
                     diff.into_formatted(move |formatter, _store, tree_diff| {
-                        diff_util::show_diff_summary(formatter, tree_diff, path_converter)
+                        diff_util::show_diff_summary(formatter, tree_diff, path_converter, None)
                             .block_on()
                     })
                 })
@@ -2480,6 +2481,7 @@ impl Template for DiffStatsFormatted<'_> {
             &self.stats,
             self.path_converter,
             self.width,
+            None,
         )
     }
 }

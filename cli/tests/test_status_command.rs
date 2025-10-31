@@ -553,3 +553,95 @@ fn test_status_untracked_files() {
     [EOF]
     ");
 }
+
+#[test]
+fn test_status_with_hyperlinks_enabled() {
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Create some files
+    work_dir.write_file("modified.txt", "original content");
+    work_dir.run_jj(["new"]).success();
+    work_dir.write_file("modified.txt", "modified content");
+    work_dir.write_file("untracked.txt", "new file");
+
+    // Enable hyperlinks and color
+    let output = work_dir.run_jj([
+        "status",
+        "--config=ui.hyperlinks=true",
+        "--config=ui.color=always",
+    ]);
+
+    // Verify hyperlinks are present in output
+    // Note: In test output, OSC 8 escape sequences may be displayed as symbols
+    // The actual implementation uses \x1b]8;; but tests may see ␛]8;;
+    let stdout_raw = output.stdout.raw();
+
+    // Check for file:// URLs which indicate hyperlinks are present
+    assert!(
+        stdout_raw.contains("file://"),
+        "Expected file:// URL in hyperlink output"
+    );
+    // Check for OSC 8 marker (]8;;) regardless of how escape is displayed
+    assert!(
+        stdout_raw.contains("]8;;"),
+        "Expected OSC 8 marker ]8;; in output"
+    );
+    assert!(
+        stdout_raw.contains("modified.txt"),
+        "Expected file path in output"
+    );
+}
+
+#[test]
+fn test_status_with_hyperlinks_disabled() {
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Create some files
+    work_dir.write_file("modified.txt", "original content");
+    work_dir.run_jj(["new"]).success();
+    work_dir.write_file("modified.txt", "modified content");
+    work_dir.write_file("untracked.txt", "new file");
+
+    // Hyperlinks default to disabled
+    let output = work_dir.run_jj(["status", "--config=ui.color=always"]);
+
+    // Verify hyperlinks are NOT present
+    let stdout_raw = output.stdout.raw();
+    assert!(
+        !stdout_raw.contains("]8;;"),
+        "Expected no OSC 8 markers when hyperlinks disabled"
+    );
+    assert!(
+        stdout_raw.contains("modified.txt"),
+        "Expected file path in output"
+    );
+}
+
+#[test]
+fn test_status_hyperlinks_respect_no_color() {
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    work_dir.write_file("file.txt", "content");
+    work_dir.run_jj(["new"]).success();
+    work_dir.write_file("file.txt", "modified");
+
+    // Even with hyperlinks enabled, they should be disabled if color is off
+    let output = work_dir.run_jj([
+        "status",
+        "--config=ui.hyperlinks=true",
+        "--color=never",
+    ]);
+
+    // Verify no hyperlinks when color is disabled
+    let stdout_raw = output.stdout.raw();
+    assert!(
+        !stdout_raw.contains("]8;;"),
+        "Expected no OSC 8 markers when color is disabled"
+    );
+}

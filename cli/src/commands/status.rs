@@ -85,6 +85,7 @@ pub(crate) fn cmd_status(
         if !wc_has_changes && !wc_has_untracked {
             writeln!(formatter, "The working copy has no changes.")?;
         } else {
+            let hostname = workspace_command.hyperlink_hostname(ui);
             if wc_has_changes {
                 writeln!(formatter, "Working copy changes:")?;
                 let mut copy_records = CopyRecords::default();
@@ -102,6 +103,7 @@ pub(crate) fn cmd_status(
                         &matcher,
                         &copy_records,
                         width,
+                        hostname.as_deref(),
                     )
                     .block_on()?;
             }
@@ -112,7 +114,9 @@ pub(crate) fn cmd_status(
                     snapshot_stats.untracked_paths.keys(),
                     tree,
                     |path, is_dir| {
-                        let ui_path = workspace_command.path_converter().format_file_path(path);
+                        let ui_path = workspace_command
+                            .path_converter()
+                            .format_file_path_hyperlink(path, hostname.as_deref());
                         writeln!(
                             formatter.labeled("diff").labeled("untracked"),
                             "? {ui_path}{}",

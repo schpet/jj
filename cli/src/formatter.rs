@@ -729,11 +729,25 @@ impl Formatter for FormatRecorder {
 fn write_sanitized(output: &mut impl Write, buf: &[u8]) -> Result<(), Error> {
     if buf.contains(&b'\x1b') {
         let mut sanitized = Vec::with_capacity(buf.len());
-        for b in buf {
-            if *b == b'\x1b' {
+        let mut i = 0;
+        while i < buf.len() {
+            if buf[i] == b'\x1b' {
+                // Check if this is an OSC 8 hyperlink sequence (ESC ]8;;)
+                if i + 3 < buf.len() && buf[i + 1] == b']' && buf[i + 2] == b'8' && buf[i + 3] == b';' {
+                    // Find the end of the OSC 8 sequence (ESC \)
+                    if let Some(end_pos) = buf[i..].windows(2).position(|w| w == b"\x1b\\") {
+                        // Write the entire OSC 8 sequence unsanitized
+                        sanitized.extend_from_slice(&buf[i..i + end_pos + 2]);
+                        i += end_pos + 2;
+                        continue;
+                    }
+                }
+                // Not an OSC 8 sequence, sanitize this escape
                 sanitized.extend_from_slice("␛".as_bytes());
+                i += 1;
             } else {
-                sanitized.push(*b);
+                sanitized.push(buf[i]);
+                i += 1;
             }
         }
         output.write_all(&sanitized)

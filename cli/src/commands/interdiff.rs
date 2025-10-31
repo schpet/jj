@@ -87,6 +87,7 @@ pub(crate) fn cmd_interdiff(
             &to,
             matcher.as_ref(),
             ui.term_width(),
+            None,
         )
         .block_on()?;
     Ok(())
