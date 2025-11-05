@@ -1729,3 +1729,35 @@ fn test_log_format_trailers() {
     ]);
     insta::assert_snapshot!(output, @"false[EOF]");
 }
+
+#[test]
+fn test_log_customize_format_path() {
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    work_dir.write_file("file1.txt", "content1\n");
+    work_dir.write_file("subdir/file2.txt", "content2\n");
+    work_dir.run_jj(["new"]).success();
+
+    // Test default format_path behavior
+    let output = work_dir.run_jj(["file", "list", "-r@-"]);
+    insta::assert_snapshot!(output, @r"
+    file1.txt
+    subdir/file2.txt
+    [EOF]
+    ");
+
+    // Customize format_path to show paths in uppercase
+    let output = work_dir.run_jj([
+        "file",
+        "list",
+        "-r@-",
+        "--config=template-aliases.'format_path(path)'='path.display().upper()'",
+    ]);
+    insta::assert_snapshot!(output, @r"
+    FILE1.TXT
+    SUBDIR/FILE2.TXT
+    [EOF]
+    ");
+}
