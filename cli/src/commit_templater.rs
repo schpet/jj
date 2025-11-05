@@ -1899,6 +1899,19 @@ fn builtin_repo_path_methods<'repo>() -> CommitTemplateBuildMethodFnMap<'repo, R
             Ok(out_property.into_dyn_wrapped())
         },
     );
+    map.insert(
+        "absolute",
+        |language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let path_converter = language.path_converter;
+            let out_property = self_property.map(move |path| match path_converter {
+                RepoPathUiConverter::Fs { base, .. } => {
+                    path.to_fs_path_unchecked(base).display().to_string()
+                }
+            });
+            Ok(out_property.into_dyn_wrapped())
+        },
+    );
     map
 }
 
@@ -2891,6 +2904,21 @@ mod tests {
             insta::assert_snapshot!(
                 env.render_ok("self.display()", &repo_path_buf("file")), @"../file");
         }
+
+        // .absolute() to convert to absolute filesystem path
+        let workspace_root = env.test_workspace.workspace.workspace_root();
+        let abs_path = env.render_ok("self.absolute()", &repo_path_buf("dir/file"));
+        assert!(
+            abs_path.starts_with(workspace_root.to_str().unwrap()),
+            "absolute path should start with workspace root"
+        );
+        assert!(
+            abs_path.ends_with(&format!("dir{}file", std::path::MAIN_SEPARATOR)),
+            "absolute path should end with dir/file"
+        );
+
+        let abs_root = env.render_ok("self.absolute()", &repo_path_buf(""));
+        assert_eq!(abs_root, workspace_root.display().to_string());
 
         let template = "if(self.parent(), self.parent(), '<none>')";
         insta::assert_snapshot!(env.render_ok(template, &repo_path_buf("")), @"<none>");
