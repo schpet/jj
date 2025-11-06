@@ -565,3 +565,77 @@ fn test_status_untracked_files() {
     [EOF]
     ");
 }
+
+#[test]
+fn test_status_templated_baseline() {
+    // Baseline test for templated status output.
+    // This test verifies that the default template produces the same output
+    // as the current hardcoded format.
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Create a scenario with various status elements:
+    // - Modified files
+    // - Added files
+    // - Working copy commit info
+    // - Parent commit info
+    work_dir.write_file("modified.txt", "original");
+    work_dir.run_jj(["new"]).success();
+    work_dir.write_file("modified.txt", "changed");
+    work_dir.write_file("added.txt", "new content");
+
+    // Test basic status output
+    let output = work_dir.run_jj(["status"]);
+    insta::assert_snapshot!(output, @r"
+    Working copy changes:
+    A added.txt
+    M modified.txt
+    Working copy  (@) : rlvkpnrz a2df476d (no description set)
+    Parent commit (@-): qpvuntsm a12bca4f (no description set)
+    [EOF]
+    ");
+
+    // Test with --color=always to capture ANSI codes
+    let output = work_dir.run_jj(["status", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
+    Working copy changes:
+    [38;5;2mA added.txt[39m
+    [38;5;6mM modified.txt[39m
+    Working copy  (@) : [1m[38;5;13mr[38;5;8mlvkpnrz[39m [38;5;12ma2[38;5;8mdf476d[39m [38;5;3m(no description set)[0m
+    Parent commit (@-): [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [1m[38;5;4ma1[0m[38;5;8m2bca4f[39m [38;5;3m(no description set)[39m
+    [EOF]
+    ");
+}
+
+#[test]
+fn test_status_with_custom_template() {
+    // Test that --template flag works for customizing commit display
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    work_dir.write_file("file.txt", "content");
+    work_dir.run_jj(["new"]).success();
+    work_dir.write_file("file.txt", "modified");
+
+    // Test with custom template showing just change_id
+    let output = work_dir.run_jj(["status", "-T", "change_id.short()"]);
+    insta::assert_snapshot!(output, @r"
+    Working copy changes:
+    M file.txt
+    Working copy  (@) : rlvkpnrzqnoo
+    Parent commit (@-): qpvuntsmwlqt
+    [EOF]
+    ");
+
+    // Test with template showing change_id and description
+    let output = work_dir.run_jj(["status", "-T", r#"change_id.short() ++ " | " ++ description.first_line()"#]);
+    insta::assert_snapshot!(output, @r"
+    Working copy changes:
+    M file.txt
+    Working copy  (@) : rlvkpnrzqnoo | 
+    Parent commit (@-): qpvuntsmwlqt | 
+    [EOF]
+    ");
+}

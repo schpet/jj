@@ -116,11 +116,33 @@ use crate::templater::Template;
 use crate::templater::TemplateFormatter;
 use crate::templater::TemplatePropertyError;
 use crate::templater::TemplatePropertyExt as _;
+use crate::templater::WrapTemplateProperty;
 
 pub trait CommitTemplateLanguageExtension {
     fn build_fn_table<'repo>(&self) -> CommitTemplateBuildFnTable<'repo>;
 
     fn build_cache_extensions(&self, extensions: &mut ExtensionsMap);
+}
+
+/// Environment trait for templates that need access to commit-related data.
+/// This allows commit template methods to work in different template contexts
+/// (e.g., status templates, commit templates).
+pub trait CommitTemplateEnvironment<'repo> {
+    fn repo(&self) -> &'repo dyn Repo;
+    fn path_converter(&self) -> &'repo RepoPathUiConverter;
+    fn workspace_name(&self) -> &WorkspaceNameBuf;
+    fn revset_parse_context(&self) -> &RevsetParseContext<'repo>;
+    fn id_prefix_context(&self) -> &'repo IdPrefixContext;
+    fn keyword_cache(&self) -> &CommitKeywordCache<'repo>;
+}
+
+/// Trait for property types that can wrap commit template types.
+pub trait CommitTemplatePropertyVar<'repo>
+where
+    Self: WrapTemplateProperty<'repo, Commit>,
+    Self: WrapTemplateProperty<'repo, Option<Commit>>,
+    Self: WrapTemplateProperty<'repo, Vec<Commit>>,
+{
 }
 
 /// Template environment for `jj log` and `jj evolog`.
@@ -137,7 +159,7 @@ pub struct CommitTemplateLanguage<'repo> {
     id_prefix_context: &'repo IdPrefixContext,
     immutable_expression: Arc<UserRevsetExpression>,
     conflict_marker_style: ConflictMarkerStyle,
-    build_fn_table: CommitTemplateBuildFnTable<'repo>,
+    pub build_fn_table: CommitTemplateBuildFnTable<'repo>,
     keyword_cache: CommitKeywordCache<'repo>,
     cache_extensions: ExtensionsMap,
 }
@@ -405,6 +427,32 @@ impl OperationTemplateEnvironment for CommitTemplateLanguage<'_> {
     }
 }
 
+impl<'repo> CommitTemplateEnvironment<'repo> for CommitTemplateLanguage<'repo> {
+    fn repo(&self) -> &'repo dyn Repo {
+        self.repo
+    }
+
+    fn path_converter(&self) -> &'repo RepoPathUiConverter {
+        self.path_converter
+    }
+
+    fn workspace_name(&self) -> &WorkspaceNameBuf {
+        &self.workspace_name
+    }
+
+    fn revset_parse_context(&self) -> &RevsetParseContext<'repo> {
+        &self.revset_parse_context
+    }
+
+    fn id_prefix_context(&self) -> &'repo IdPrefixContext {
+        self.id_prefix_context
+    }
+
+    fn keyword_cache(&self) -> &CommitKeywordCache<'repo> {
+        &self.keyword_cache
+    }
+}
+
 pub enum CommitTemplatePropertyKind<'repo> {
     Core(CoreTemplatePropertyKind<'repo>),
     Operation(OperationTemplatePropertyKind<'repo>),
@@ -468,6 +516,22 @@ template_builder::impl_property_wrappers!(<'repo> CommitTemplatePropertyKind<'re
     Trailer(Trailer),
     TrailerList(Vec<Trailer>),
 });
+
+/// Macro to implement `WrapTemplateProperty` for commit property types.
+/// This allows other template systems (like status templates) to delegate to commit templates.
+macro_rules! impl_commit_property_wrappers {
+    ($($head:tt)+) => {
+        $crate::template_builder::impl_property_wrappers!($($head)+ {
+            Commit(jj_lib::commit::Commit),
+            CommitOpt(Option<jj_lib::commit::Commit>),
+            CommitList(Vec<jj_lib::commit::Commit>),
+        });
+    };
+}
+
+pub(crate) use impl_commit_property_wrappers;
+
+impl<'repo> CommitTemplatePropertyVar<'repo> for CommitTemplatePropertyKind<'repo> {}
 
 impl<'repo> CoreTemplatePropertyVar<'repo> for CommitTemplatePropertyKind<'repo> {
     fn wrap_template(template: Box<dyn Template + 'repo>) -> Self {

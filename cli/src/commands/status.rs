@@ -21,15 +21,14 @@ use jj_lib::repo_path::RepoPath;
 use jj_lib::repo_path::RepoPathBuf;
 use jj_lib::revset::RevsetExpression;
 use jj_lib::revset::RevsetFilterPredicate;
+use jj_lib::working_copy::SnapshotStats;
 use pollster::FutureExt as _;
 use tracing::instrument;
 
 use crate::cli_util::CommandHelper;
 use crate::cli_util::print_conflicted_paths;
 use crate::cli_util::print_snapshot_stats;
-use crate::cli_util::print_unmatched_explicit_paths;
 use crate::command_error::CommandError;
-use crate::diff_util::DiffFormat;
 use crate::diff_util::get_copy_records;
 use crate::formatter::FormatterExt as _;
 use crate::ui::Ui;
@@ -52,6 +51,13 @@ pub(crate) struct StatusArgs {
     /// Restrict the status display to these paths
     #[arg(value_name = "FILESETS", value_hint = clap::ValueHint::AnyPath)]
     paths: Vec<String>,
+    /// Render status using the given template
+    ///
+    /// For the syntax, see https://jj-vcs.github.io/jj/latest/templates/
+    ///
+    /// TODO: document this
+    #[arg(long, short = 'T')]
+    template: Option<String>,
 }
 
 #[instrument(skip_all)]
@@ -61,6 +67,7 @@ pub(crate) fn cmd_status(
     args: &StatusArgs,
 ) -> Result<(), CommandError> {
     let (workspace_command, snapshot_stats) = command.workspace_helper_with_stats(ui)?;
+
     print_snapshot_stats(
         ui,
         &snapshot_stats,
@@ -77,74 +84,45 @@ pub(crate) fn cmd_status(
     let mut formatter = ui.stdout_formatter();
     let formatter = formatter.as_mut();
 
+    // Get template from args or config (defaults to templates.status in config)
+    let status_template_text = match &args.template {
+        Some(value) => value.clone(),
+        None => workspace_command.settings().get_string("templates.status")?,
+    };
+
     if let Some(wc_commit) = &maybe_wc_commit {
         let parent_tree = wc_commit.parent_tree(repo.as_ref())?;
         let tree = wc_commit.tree();
 
-        print_unmatched_explicit_paths(ui, &workspace_command, &fileset_expression, [&tree])?;
-
-        let wc_has_changes = tree.tree_ids() != parent_tree.tree_ids();
-        let wc_has_untracked = !snapshot_stats.untracked_paths.is_empty();
-        if !wc_has_changes && !wc_has_untracked {
-            writeln!(formatter, "The working copy has no changes.")?;
-        } else {
-            if wc_has_changes {
-                writeln!(formatter, "Working copy changes:")?;
-                let mut copy_records = CopyRecords::default();
-                for parent in wc_commit.parent_ids() {
-                    let records = get_copy_records(repo.store(), parent, wc_commit.id(), &matcher)?;
-                    copy_records.add_records(records)?;
-                }
-                let diff_renderer = workspace_command.diff_renderer(vec![DiffFormat::Summary]);
-                let width = ui.term_width();
-                diff_renderer
-                    .show_diff(
-                        ui,
-                        formatter,
-                        Diff::new(&parent_tree, &tree),
-                        &matcher,
-                        &copy_records,
-                        width,
-                    )
-                    .block_on()?;
-            }
-
-            if wc_has_untracked {
-                writeln!(formatter, "Untracked paths:")?;
-                visit_collapsed_untracked_files(
-                    snapshot_stats.untracked_paths.keys(),
-                    tree.clone(),
-                    |path, is_dir| {
-                        let ui_path = workspace_command.path_converter().format_file_path(path);
-                        writeln!(
-                            formatter.labeled("diff").labeled("untracked"),
-                            "? {ui_path}{}",
-                            if is_dir {
-                                std::path::MAIN_SEPARATOR_STR
-                            } else {
-                                ""
-                            }
-                        )?;
-                        Ok(())
-                    },
-                )
-                .block_on()?;
-            }
+        // Render status sections using templates
+        let mut copy_records = CopyRecords::default();
+        for parent in wc_commit.parent_ids() {
+            let records = get_copy_records(repo.store(), parent, wc_commit.id(), &matcher)?;
+            copy_records.add_records(records)?;
         }
 
-        let template = workspace_command.commit_summary_template();
-        write!(formatter, "Working copy  (@) : ")?;
-        template.format(wc_commit, formatter)?;
-        writeln!(formatter)?;
-        for parent in wc_commit.parents() {
-            let parent = parent?;
-            //                "Working copy  (@) : "
-            write!(formatter, "Parent commit (@-): ")?;
-            template.format(&parent, formatter)?;
-            writeln!(formatter)?;
-        }
+        // Collect parent commits for template
+        let parents: Result<Vec<_>, _> = wc_commit.parents().collect();
+        let parents = parents?;
 
-        if wc_commit.has_conflict() {
+        let status = build_working_copy_status(
+            &parent_tree,
+            &tree,
+            &matcher,
+            &copy_records,
+            &snapshot_stats,
+            repo.as_ref(),
+            Some(wc_commit.clone()),
+            parents,
+        )
+        .block_on()?;
+
+        let template = workspace_command.parse_status_template(ui, &status_template_text)?;
+        template.format(&status, formatter)?;
+
+        // Commits are now rendered by the template
+        // Check for conflicts in working copy
+        if args.template.is_none() && wc_commit.has_conflict() {
             // TODO: Conflicts should also be filtered by the `matcher`. See the related
             // TODO on `MergedTree::conflicts()`.
             let conflicts = wc_commit.tree().conflicts().collect_vec();
@@ -181,55 +159,166 @@ pub(crate) fn cmd_status(
                 }
             }
         }
+
+        // Bookmark conflicts are now rendered by the template
     } else {
         writeln!(formatter, "No working copy")?;
     }
 
-    let conflicted_local_bookmarks = repo
+    Ok(())
+}
+
+fn diff_entry_to_file_change(
+    path: &jj_lib::copies::CopiesTreeDiffEntryPath,
+    values: &Diff<jj_lib::merge::MergedTreeValue>,
+) -> crate::status_templater::StatusEntry {
+    use crate::status_templater::{StatusEntry, FileStatus};
+    use jj_lib::copies::CopyOperation;
+
+    let target_path = path.target.clone();
+
+    // Determine status based on copy operation and before/after presence
+    let (status, copy_source) = if let Some((source_path, op)) = &path.source {
+        let status = match op {
+            CopyOperation::Copy => FileStatus::Copied,
+            CopyOperation::Rename => FileStatus::Renamed,
+        };
+        (status, Some(source_path.clone()))
+    } else {
+        let status = match (values.before.is_present(), values.after.is_present()) {
+            (true, true) => FileStatus::Modified,
+            (false, true) => FileStatus::Added,
+            (true, false) => FileStatus::Deleted,
+            (false, false) => panic!("values pair must differ"),
+        };
+        (status, None)
+    };
+
+    if let Some(source) = copy_source {
+        StatusEntry::with_copy_source(target_path, status, source)
+    } else {
+        StatusEntry::new(target_path, status)
+    }
+}
+
+/// Extracts file changes from tree diff for template rendering
+async fn extract_file_changes(
+    parent_tree: &MergedTree,
+    tree: &MergedTree,
+    matcher: &dyn jj_lib::matchers::Matcher,
+    copy_records: &CopyRecords,
+) -> Result<Vec<crate::status_templater::StatusEntry>, CommandError> {
+    use futures::StreamExt;
+    use jj_lib::copies::CopiesTreeDiffEntry;
+
+    let mut file_changes = Vec::new();
+    let mut diff_stream = parent_tree.diff_stream_with_copies(tree, matcher, copy_records);
+
+    while let Some(CopiesTreeDiffEntry { path, values }) = diff_stream.next().await {
+        let values = values?;
+        let file_change = diff_entry_to_file_change(&path, &values);
+        file_changes.push(file_change);
+    }
+
+    Ok(file_changes)
+}
+
+/// Extracts conflicts from tree for template rendering
+fn extract_conflicts(
+    tree: &MergedTree,
+) -> Result<Vec<crate::status_templater::ConflictInfo>, CommandError> {
+    use crate::status_templater::ConflictInfo;
+
+    let conflicts: Result<Vec<ConflictInfo>, _> = tree
+        .conflicts()
+        .map(|(path, conflict)| {
+            // Propagate errors instead of silently ignoring them
+            conflict.map(|conflict| {
+                let num_sides = conflict.num_sides();
+                ConflictInfo::new(path, num_sides)
+            })
+        })
+        .collect();
+
+    Ok(conflicts?)
+}
+
+/// Extracts bookmark conflicts for template rendering
+fn extract_bookmark_conflicts(
+    repo: &dyn jj_lib::repo::Repo,
+) -> (Vec<crate::status_templater::BookmarkConflict>, Vec<crate::status_templater::BookmarkConflict>) {
+    use crate::status_templater::BookmarkConflict;
+
+    let local_conflicts: Vec<BookmarkConflict> = repo
         .view()
         .local_bookmarks()
         .filter(|(_, target)| target.has_conflict())
-        .map(|(bookmark_name, _)| bookmark_name)
-        .collect_vec();
-    let conflicted_remote_bookmarks = repo
+        .map(|(name, _)| BookmarkConflict::new(name.as_str().to_owned()))
+        .collect();
+
+    let remote_conflicts: Vec<BookmarkConflict> = repo
         .view()
         .all_remote_bookmarks()
         .filter(|(_, remote_ref)| remote_ref.target.has_conflict())
-        .map(|(symbol, _)| symbol)
-        .collect_vec();
-    if !conflicted_local_bookmarks.is_empty() {
-        writeln!(
-            formatter.labeled("warning").with_heading("Warning: "),
-            "These bookmarks have conflicts:"
-        )?;
-        for name in conflicted_local_bookmarks {
-            write!(formatter, "  ")?;
-            write!(formatter.labeled("bookmark"), "{}", name.as_symbol())?;
-            writeln!(formatter)?;
-        }
-        writeln!(
-            formatter.labeled("hint").with_heading("Hint: "),
-            "Use `jj bookmark list` to see details. Use `jj bookmark set <name> -r <rev>` to \
-             resolve."
-        )?;
-    }
-    if !conflicted_remote_bookmarks.is_empty() {
-        writeln!(
-            formatter.labeled("warning").with_heading("Warning: "),
-            "These remote bookmarks have conflicts:"
-        )?;
-        for symbol in conflicted_remote_bookmarks {
-            write!(formatter, "  ")?;
-            write!(formatter.labeled("bookmark"), "{symbol}")?;
-            writeln!(formatter)?;
-        }
-        writeln!(
-            formatter.labeled("hint").with_heading("Hint: "),
-            "Use `jj bookmark list` to see details. Use `jj git fetch` to resolve."
-        )?;
-    }
+        .map(|(symbol, _)| {
+            BookmarkConflict::new_remote(
+                symbol.name.as_str().to_owned(),
+                symbol.remote.as_str().to_owned(),
+            )
+        })
+        .collect();
 
-    Ok(())
+    (local_conflicts, remote_conflicts)
+}
+
+/// Extracts collapsed untracked paths for template rendering
+async fn extract_untracked_paths(
+    untracked_paths: impl IntoIterator<Item = impl AsRef<RepoPath>>,
+    tree: &MergedTree,
+) -> Result<Vec<RepoPathBuf>, CommandError> {
+    let mut paths = Vec::new();
+
+    visit_collapsed_untracked_files(
+        untracked_paths,
+        tree.clone(),
+        |path, _is_dir| {
+            paths.push(path.to_owned());
+            Ok(())
+        },
+    )
+    .await?;
+
+    Ok(paths)
+}
+
+/// Builds a complete WorkingCopyStatus object for template rendering
+async fn build_working_copy_status(
+    parent_tree: &MergedTree,
+    tree: &MergedTree,
+    matcher: &dyn jj_lib::matchers::Matcher,
+    copy_records: &CopyRecords,
+    snapshot_stats: &SnapshotStats,
+    repo: &dyn jj_lib::repo::Repo,
+    working_copy: Option<jj_lib::commit::Commit>,
+    parents: Vec<jj_lib::commit::Commit>,
+) -> Result<crate::status_templater::WorkingCopyStatus, CommandError> {
+    use crate::status_templater::WorkingCopyStatus;
+
+    // Extract all data using helper functions
+    let file_changes = extract_file_changes(parent_tree, tree, matcher, copy_records).await?;
+    let untracked_paths = extract_untracked_paths(snapshot_stats.untracked_paths.keys(), tree).await?;
+    let conflicts = extract_conflicts(tree)?;
+    let (local_bookmark_conflicts, remote_bookmark_conflicts) = extract_bookmark_conflicts(repo);
+
+    Ok(WorkingCopyStatus {
+        file_changes,
+        untracked_paths,
+        conflicts,
+        local_bookmark_conflicts,
+        remote_bookmark_conflicts,
+        working_copy,
+        parents,
+    })
 }
 
 async fn visit_collapsed_untracked_files(

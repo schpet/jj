@@ -14,6 +14,8 @@ if(remote,
 
 commit_summary = 'format_commit_summary_with_refs(self, bookmarks)'
 
+status = 'builtin_status_default'
+
 file_annotate = '''
 separate(" ",
   commit.change_id().shortest(8),
@@ -94,6 +96,74 @@ concat(
   raw_escape_sequence("\e]8;;" ++ url ++ "\e\\"),
   text,
   raw_escape_sequence("\e]8;;\e\\"),
+)
+'''
+
+builtin_status_default = 'builtin_status_default(self)'
+'builtin_status_default(status)' = '''
+concat(
+  format_status_changes(status),
+  format_status_working_copy_and_parents(status),
+  format_status_bookmark_conflicts(status),
+)
+'''
+
+'format_status_changes(status)' = '''
+if(status.has_file_changes() || status.has_untracked_paths(),
+  concat(
+    if(status.has_file_changes(),
+      concat(
+        "Working copy changes:\n",
+        status.file_changes().map(|file| format_status_file_entry(file)).join("")
+      ),
+      ""
+    ),
+    if(status.has_untracked_paths(),
+      concat(
+        "Untracked paths:\n",
+        status.untracked_paths().map(|path| concat(
+          label("diff untracked", "? " ++ format_path(path)),
+          "\n"
+        )).join("")
+      ),
+      ""
+    )
+  ),
+  "The working copy has no changes.\n"
+)
+'''
+
+'format_status_file_entry(file)' = '''
+concat(
+  label("diff " ++ file.status_label(),
+    file.status() ++ " " ++
+    if(file.copy_source(),
+      "{" ++ file.copy_source() ++ " => " ++ format_path(file.path()) ++ "}",
+      format_path(file.path())
+    )
+  ),
+  "\n"
+)
+'''
+
+'format_status_working_copy_and_parents(status)' = '''
+concat(
+  "Working copy  (@) : " ++ format_commit_summary_with_refs(status.working_copy(), status.working_copy().bookmarks()) ++ "\n",
+  status.parents().map(|commit|
+    "Parent commit (@-): " ++ format_commit_summary_with_refs(commit, commit.bookmarks()) ++ "\n"
+  ).join("")
+)
+'''
+
+'format_status_bookmark_conflicts(status)' = '''
+if(status.has_local_bookmark_conflicts() || status.has_remote_bookmark_conflicts(),
+  concat(
+    label("warning", label("heading", "Warning: ")) ++ "These bookmarks have conflicts:\n",
+    status.local_bookmark_conflicts().map(|conflict| "  " ++ label("bookmark", conflict.name()) ++ "\n").join(""),
+    status.remote_bookmark_conflicts().map(|conflict| "  " ++ label("bookmark", conflict.name()) ++ "\n").join(""),
+    label("hint", label("heading", "Hint: ")) ++ "Use `jj bookmark list` to see details. Use `jj bookmark set <name> -r <rev>` to resolve.\n"
+  ),
+  ""
 )
 '''
 

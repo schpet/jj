@@ -154,6 +154,7 @@ use crate::command_error::user_error;
 use crate::command_error::user_error_with_hint;
 use crate::commit_templater::CommitTemplateLanguage;
 use crate::commit_templater::CommitTemplateLanguageExtension;
+use crate::status_templater::StatusTemplateLanguage;
 use crate::complete;
 use crate::config::ConfigArgKind;
 use crate::config::ConfigEnv;
@@ -995,6 +996,17 @@ impl WorkspaceCommandEnvironment {
         )
     }
 
+    /// Creates status template language environment for this workspace and the
+    /// given `repo`.
+    pub fn status_template_language<'a>(
+        &'a self,
+        repo: &'a dyn Repo,
+        id_prefix_context: &'a IdPrefixContext,
+    ) -> StatusTemplateLanguage<'a> {
+        let commit_language = self.commit_template_language(repo, id_prefix_context);
+        StatusTemplateLanguage::new(commit_language)
+    }
+
     pub fn operation_template_extensions(&self) -> &[Arc<dyn OperationTemplateLanguageExtension>] {
         &self.command.data.operation_template_extensions
     }
@@ -1720,10 +1732,26 @@ to the current parents may contain changes from multiple commits.
         self.parse_template(ui, &language, template_text)
     }
 
+    /// Parses status template into evaluation tree.
+    pub fn parse_status_template(
+        &self,
+        ui: &Ui,
+        template_text: &str,
+    ) -> Result<TemplateRenderer<'_, crate::status_templater::WorkingCopyStatus>, CommandError> {
+        let language = self.status_template_language();
+        self.parse_template(ui, &language, template_text)
+    }
+
     /// Creates commit template language environment for this workspace.
     pub fn commit_template_language(&self) -> CommitTemplateLanguage<'_> {
         self.env
             .commit_template_language(self.repo().as_ref(), self.id_prefix_context())
+    }
+
+    /// Creates status template language environment for this workspace.
+    pub fn status_template_language(&self) -> StatusTemplateLanguage<'_> {
+        self.env
+            .status_template_language(self.repo().as_ref(), self.id_prefix_context())
     }
 
     /// Creates operation template language environment for this workspace.
